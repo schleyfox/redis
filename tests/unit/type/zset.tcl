@@ -210,6 +210,17 @@ start_server {tags {"zset"}} {
              [r zcount zset 2 4] [r zcount zset (2 (4]
     } {{b c d} c 3 1}
 
+    test {ZREVRANGEBYSCORE basics} {
+        r del zset
+        r zadd zset 1 a
+        r zadd zset 2 b
+        r zadd zset 3 c
+        r zadd zset 4 d
+        r zadd zset 5 e
+
+        list [r zrevrangebyscore zset 2 4] [r zrevrangebyscore zset (2 (4]
+    } {{d c b} c}
+
     test {ZRANGEBYSCORE withscores} {
         r del zset
         r zadd zset 1 a

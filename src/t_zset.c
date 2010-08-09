@@ -252,6 +252,18 @@ unsigned long zslDeleteRangeByRank(zskiplist *zsl, unsigned int start, unsigned 
     return removed;
 }
 
+/* Find the last node having a score equal or less than the specified one.
+ * Returns NULL if there is no match. */
+zskiplistNode *zslLastWithScore(zskiplist *zsl, double score) {
+    zskiplistNode *x;
+
+    x = zsl->tail;
+    while(x->backward && x->backward->score > score)
+        x = x->backward;
+
+    return x->backward;
+}
+
 /* Find the first node having a score equal or greater than the specified one.
  * Returns NULL if there is no match. */
 zskiplistNode *zslFirstWithScore(zskiplist *zsl, double score) {
@@ -803,7 +815,7 @@ void zrevrangeCommand(redisClient *c) {
 
 /* This command implements both ZRANGEBYSCORE and ZCOUNT.
  * If justcount is non-zero, just the count is returned. */
-void genericZrangebyscoreCommand(redisClient *c, int justcount) {
+void genericZrangebyscoreCommand(redisClient *c, int justcount, int reverse) {
     robj *o;
     double min, max;
     int minex = 0, maxex = 0; /* are min or max exclusive? */
@@ -869,10 +881,15 @@ void genericZrangebyscoreCommand(redisClient *c, int justcount) {
             robj *ele, *lenobj = NULL;
             unsigned long rangelen = 0;
 
-            /* Get the first node with the score >= min, or with
-             * score > min if 'minex' is true. */
-            ln = zslFirstWithScore(zsl,min);
-            while (minex && ln && ln->score == min) ln = ln->forward[0];
+            if(reverse) {
+                ln = zslLastWithScore(zsl,max);
+                while(maxex && ln && ln->score == max) ln = ln->backward;
+            } else {
+                /* Get the first node with the score >= min, or with
+                 * score > min if 'minex' is true. */
+                ln = zslFirstWithScore(zsl,min);
+                while (minex && ln && ln->score == min) ln = ln->forward[0];
+            }
 
             if (ln == NULL) {
                 /* No element matching the speciifed interval */
@@ -890,10 +907,11 @@ void genericZrangebyscoreCommand(redisClient *c, int justcount) {
                 decrRefCount(lenobj);
             }
 
-            while(ln && (maxex ? (ln->score < max) : (ln->score <= max))) {
+            while(ln && (reverse ? (minex ? (ln->score > min) : (ln->score >= min)) : 
+                                   (maxex ? (ln->score < max) : (ln->score <= max)))) {
                 if (offset) {
                     offset--;
-                    ln = ln->forward[0];
+                    ln = reverse ? ln->backward : ln->forward[0];
                     continue;
                 }
                 if (limit == 0) break;
@@ -903,7 +921,7 @@ void genericZrangebyscoreCommand(redisClient *c, int justcount) {
                     if (withscores)
                         addReplyDouble(c,ln->score);
                 }
-                ln = ln->forward[0];
+                ln = reverse ? ln->backward : ln->forward[0];
                 rangelen++;
                 if (limit > 0) limit--;
             }
@@ -918,11 +936,15 @@ void genericZrangebyscoreCommand(redisClient *c, int justcount) {
 }
 
 void zrangebyscoreCommand(redisClient *c) {
-    genericZrangebyscoreCommand(c,0);
+    genericZrangebyscoreCommand(c,0,0);
+}
+
+void zrevrangebyscoreCommand(redisClient *c) {
+    genericZrangebyscoreCommand(c,0,1);
 }
 
 void zcountCommand(redisClient *c) {
-    genericZrangebyscoreCommand(c,1);
+    genericZrangebyscoreCommand(c,1,0);
 }
 
 void zcardCommand(redisClient *c) {
