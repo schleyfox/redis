@@ -221,6 +221,14 @@ start_server {tags {"zset"}} {
         list [r zrevrangebyscore zset 2 4] [r zrevrangebyscore zset (2 (4]
     } {{d c b} c}
 
+    test {ZREVRANGEBYSCORE for max score} {
+        r del zset
+        r zadd zset 1283208870 a
+        r zadd zset 1283122469 b
+
+        r zrevrangebyscore zset 1283122470 1283208870
+    } {a}
+
     test {ZRANGEBYSCORE withscores} {
         r del zset
         r zadd zset 1 a

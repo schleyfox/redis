@@ -258,10 +258,10 @@ zskiplistNode *zslLastWithScore(zskiplist *zsl, double score) {
     zskiplistNode *x;
 
     x = zsl->tail;
-    while(x->backward && x->backward->score > score)
+    while(x->backward && x->backward->score >= score)
         x = x->backward;
 
-    return x->backward;
+    return x;
 }
 
 /* Find the first node having a score equal or greater than the specified one.
