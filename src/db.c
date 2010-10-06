@@ -123,6 +123,11 @@ robj *dbRandomKey(redisDb *db) {
 
 /* Delete a key, value, and associated expiration entry if any, from the DB */
 int dbDelete(redisDb *db, robj *key) {
+    /* If VM is enabled make sure to awake waiting clients for this key:
+     * deleting the key will kill the I/O thread bringing the key from swap
+     * to memory, so the client will never be notified and unblocked if we
+     * don't do it now. */
+    if (server.vm_enabled) handleClientsBlockedOnSwappedKey(db,key);
     /* Deleting an entry from the expires dict will not free the sds of
      * the key, because it is shared with the main dictionary. */
     if (dictSize(db->expires) > 0) dictDelete(db->expires,key->ptr);
@@ -199,7 +204,7 @@ void selectCommand(redisClient *c) {
     int id = atoi(c->argv[1]->ptr);
 
     if (selectDb(c,id) == REDIS_ERR) {
-        addReplySds(c,sdsnew("-ERR invalid DB index\r\n"));
+        addReplyError(c,"invalid DB index");
     } else {
         addReply(c,shared.ok);
     }
@@ -221,19 +226,17 @@ void keysCommand(redisClient *c) {
     dictIterator *di;
     dictEntry *de;
     sds pattern = c->argv[1]->ptr;
-    int plen = sdslen(pattern);
+    int plen = sdslen(pattern), allkeys;
     unsigned long numkeys = 0;
-    robj *lenobj = createObject(REDIS_STRING,NULL);
+    void *replylen = addDeferredMultiBulkLength(c);
 
     di = dictGetIterator(c->db->dict);
-    addReply(c,lenobj);
-    decrRefCount(lenobj);
+    allkeys = (pattern[0] == '*' && pattern[1] == '\0');
     while((de = dictNext(di)) != NULL) {
         sds key = dictGetEntryKey(de);
         robj *keyobj;
 
-        if ((pattern[0] == '*' && pattern[1] == '\0') ||
-            stringmatchlen(pattern,plen,key,sdslen(key),0)) {
+        if (allkeys || stringmatchlen(pattern,plen,key,sdslen(key),0)) {
             keyobj = createStringObject(key,sdslen(key));
             if (expireIfNeeded(c->db,keyobj) == 0) {
                 addReplyBulk(c,keyobj);
@@ -243,17 +246,15 @@ void keysCommand(redisClient *c) {
         }
     }
     dictReleaseIterator(di);
-    lenobj->ptr = sdscatprintf(sdsempty(),"*%lu\r\n",numkeys);
+    setDeferredMultiBulkLength(c,replylen,numkeys);
 }
 
 void dbsizeCommand(redisClient *c) {
-    addReplySds(c,
-        sdscatprintf(sdsempty(),":%lu\r\n",dictSize(c->db->dict)));
+    addReplyLongLong(c,dictSize(c->db->dict));
 }
 
 void lastsaveCommand(redisClient *c) {
-    addReplySds(c,
-        sdscatprintf(sdsempty(),":%lu\r\n",server.lastsave));
+    addReplyLongLong(c,server.lastsave);
 }
 
 void typeCommand(redisClient *c) {
@@ -262,24 +263,23 @@ void typeCommand(redisClient *c) {
 
     o = lookupKeyRead(c->db,c->argv[1]);
     if (o == NULL) {
-        type = "+none";
+        type = "none";
     } else {
         switch(o->type) {
-        case REDIS_STRING: type = "+string"; break;
-        case REDIS_LIST: type = "+list"; break;
-        case REDIS_SET: type = "+set"; break;
-        case REDIS_ZSET: type = "+zset"; break;
-        case REDIS_HASH: type = "+hash"; break;
-        default: type = "+unknown"; break;
+        case REDIS_STRING: type = "string"; break;
+        case REDIS_LIST: type = "list"; break;
+        case REDIS_SET: type = "set"; break;
+        case REDIS_ZSET: type = "zset"; break;
+        case REDIS_HASH: type = "hash"; break;
+        default: type = "unknown"; break;
         }
     }
-    addReplySds(c,sdsnew(type));
-    addReply(c,shared.crlf);
+    addReplyStatus(c,type);
 }
 
 void saveCommand(redisClient *c) {
     if (server.bgsavechildpid != -1) {
-        addReplySds(c,sdsnew("-ERR background save in progress\r\n"));
+        addReplyError(c,"Background save already in progress");
         return;
     }
     if (rdbSave(server.dbfilename) == REDIS_OK) {
@@ -291,12 +291,11 @@ void saveCommand(redisClient *c) {
 
 void bgsaveCommand(redisClient *c) {
     if (server.bgsavechildpid != -1) {
-        addReplySds(c,sdsnew("-ERR background save already in progress\r\n"));
+        addReplyError(c,"Background save already in progress");
         return;
     }
     if (rdbSaveBackground(server.dbfilename) == REDIS_OK) {
-        char *status = "+Background saving started\r\n";
-        addReplySds(c,sdsnew(status));
+        addReplyStatus(c,"Background saving started");
     } else {
         addReply(c,shared.err);
     }
@@ -305,7 +304,7 @@ void bgsaveCommand(redisClient *c) {
 void shutdownCommand(redisClient *c) {
     if (prepareForShutdown() == REDIS_OK)
         exit(0);
-    addReplySds(c, sdsnew("-ERR Errors trying to SHUTDOWN. Check logs.\r\n"));
+    addReplyError(c,"Errors trying to SHUTDOWN. Check logs.");
 }
 
 void renameGenericCommand(redisClient *c, int nx) {
@@ -514,15 +513,14 @@ void expireatCommand(redisClient *c) {
 }
 
 void ttlCommand(redisClient *c) {
-    time_t expire;
-    int ttl = -1;
+    time_t expire, ttl = -1;
 
     expire = getExpire(c->db,c->argv[1]);
     if (expire != -1) {
-        ttl = (int) (expire-time(NULL));
+        ttl = (expire-time(NULL));
         if (ttl < 0) ttl = -1;
     }
-    addReplySds(c,sdscatprintf(sdsempty(),":%d\r\n",ttl));
+    addReplyLongLong(c,(long long)ttl);
 }
 
 void persistCommand(redisClient *c) {
